@@ -1,0 +1,12 @@
+[package]
+name = "fanctrl"
+version = "0.1.0"
+edition = "2021"
+description = "A simple fan control daemon for Rock 5b"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lazy_static = "^1.4"
+libc = "^0.2"
+clap = { version = "^4.1", features = ["derive"] }
