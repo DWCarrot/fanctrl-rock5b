@@ -20,11 +20,11 @@ mod control;
 #[command(author, version, about, long_about = None)]
 struct Args {
 
-    /// Path to the sensor device
+    /// Path to the sensor device; like "/sys/class/thermal/thermal_zone0"
     #[clap(short = 'i', long)]
     watch: PathBuf,
 
-    /// Path to the pwm device
+    /// Path to the pwm device; like "/sys/devices/platform/fd8b0010.pwm/pwm/pwmchip1"
     #[clap(short = 'o', long)]
     execute: PathBuf,
 
