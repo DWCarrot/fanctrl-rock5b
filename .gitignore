@@ -11,3 +11,4 @@ Cargo.lock
 
 ## Custom: env file
 env
+.cargo/config
