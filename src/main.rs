@@ -148,6 +148,18 @@ fn run_normal(sensor: &SensorDevice, pwm: &mut PWMDeviceWrapper, control: &mut C
     Ok(())
 }
 
+fn initial(sensor: &SensorDevice, pwm: &mut PWMDeviceWrapper, control: &mut Control) -> io::Result<()> {
+    let temperature = sensor.get()?;
+    let output = control.update_force(temperature, control.min_duty_cycle());
+    match output {
+        ControlOutput::Change(duty_ratio) => {
+            pwm.change_speed(duty_ratio, temperature)?;
+        }
+        _ => unreachable!()
+    }
+    Ok(())
+}
+
 fn main() {
 
     let (sensor, mut pwm, mut control, interval, max_speed_time_cycle) = {
@@ -169,9 +181,9 @@ fn main() {
 
     unsafe { signal::register(&[libc::SIGINT, libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2]) };
 
-    pwm.initialize(control.min_duty_cycle()).unwrap();
+    initial(&sensor, &mut pwm, &mut control).unwrap();
 
-    let mut state = AppLoopState::Launch(control.lag_time_cycle());
+    let mut max_speed_last_cycle = 0;
 
     while let Ok(signum) = unsafe { signal::wait(interval) } {
         match signum {
@@ -185,34 +197,19 @@ fn main() {
                 pwm.terminate().unwrap();
                 break;
             }
-            libc::SIGUSR1 => {
-                println!("receive SIGUSR1 to maximum fan speed for {} cycles", max_speed_time_cycle);
-                state = AppLoopState::MaxSpeed(max_speed_time_cycle);
+            libc::SIGUSR2 => {
+                println!("receive SIGUSR2 to maximum fan speed for {} cycles", max_speed_time_cycle);
+                max_speed_last_cycle = max_speed_time_cycle;
                 pwm.change_speed(control.max_duty_cycle(), sensor.get().unwrap()).unwrap();
             }
-            libc::SIGUSR2 => {
-                println!("receive SIGUSR2");
+            libc::SIGUSR1 => {
+                println!("receive SIGUSR1");
             }
             0 => {
-                match &mut state {
-                    AppLoopState::Launch(cycle) => {
-                        if *cycle > 0 {
-                            *cycle -= 1;
-                        } else {
-                            state = AppLoopState::Normal;
-                        }
-                    }
-                    AppLoopState::MaxSpeed(cycle) => {
-                        if *cycle > 0 {
-                            *cycle -= 1;
-                        } else {
-                            state = AppLoopState::Normal;
-                            run_normal(&sensor, &mut pwm, &mut control).unwrap();
-                        }
-                    }
-                    AppLoopState::Normal => {
-                        run_normal(&sensor, &mut pwm, &mut control).unwrap();
-                    }
+                if max_speed_last_cycle > 0 {
+                    max_speed_last_cycle -= 1;
+                } else {
+                    run_normal(&sensor, &mut pwm, &mut control).unwrap();
                 }
             }
             _ => {

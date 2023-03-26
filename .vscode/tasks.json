@@ -1,0 +1,30 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"command": "scp",
+			"args": [
+				"-i", "../id_rsa",
+				"${workspaceFolder}/target/aarch64-unknown-linux-gnu/debug/fanctrl",
+				"${env:ROCK5B_HOST}:${env:REMOTE_WORKSPACE}/fanctrl"
+			],
+			"label": "rust: remote ARM debug setup",
+			"problemMatcher": [],
+			"dependsOn": [ "rust: cargo build arm" ]
+		},
+		{
+			"type": "cargo",
+			"command": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"args": [
+				"--target",
+				"aarch64-unknown-linux-gnu"
+			],
+			"group": "build",
+			"label": "rust: cargo build arm"
+		}
+	]
+}

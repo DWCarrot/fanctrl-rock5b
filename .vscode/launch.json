@@ -1,0 +1,19 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "custom",
+            "name": "remote debug",
+            "targetCreateCommands": [
+                "target create ${workspaceFolder}/target/aarch64-unknown-linux-gnu/debug/fanctrl"
+            ],
+            "processCreateCommands": [
+                "gdb-remote ${env:ROCK5B_HOST}:17777"
+            ]
+        }
+    ]
+}

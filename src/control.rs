@@ -114,6 +114,12 @@ impl Control {
         output
     }
 
+    pub fn update_force(&mut self, temperature: f32, duty_cycle: f32) -> ControlOutput {
+        self.last_temperature = temperature;
+        self.state = State::Keep { remain_time_cycle: self.lag_time_cycle, keep_temperature: temperature, keep_duty_cycle: duty_cycle };
+        ControlOutput::Change(duty_cycle)
+    }
+
     pub fn stop_temperature(&self) -> f32 {
         self.temperature_rule.stop_temperature
     }
