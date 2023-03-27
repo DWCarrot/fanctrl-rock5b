@@ -66,108 +66,24 @@ struct Args {
 }
 
 
-pub struct PWMDeviceWrapper {
+struct Application {
+    sensor: SensorDevice,
     pwm: PWMDevice,
-    is_enabled: bool,
     frequency: u32,
+    on: bool,
+    control: Control,
+    interval: Duration,
+    max_speed_time_cycle: usize,
+    max_speed_remaining_cycle: usize,
 }
 
-impl PWMDeviceWrapper {
+impl Application {
 
-    pub fn new(pwm: PWMDevice, frequency: u32) -> Self {
-        Self { pwm, is_enabled: false, frequency }
-    }
-
-    fn initialize(&mut self, initial: f32) -> io::Result<()> {
-        // assume initial is in (0, 1)
-        self.pwm.set_period(self.frequency)?;
-        self.pwm.set_polarity(Polarity::Normal)?;
-        self.is_enabled = true;
-        self.pwm.set_duty_cycle(self.calc_duty_cycle(initial))?;
-        self.pwm.set_enable(self.is_enabled)?;
-        println!("fan launch: duty_ratio={}", initial);
-        Ok(())
-    }
-
-    fn change_speed(&mut self, duty_ratio: f32, temperature: f32) -> io::Result<()> {
-        // assume initial is in (0, 1)
-        self.pwm.set_duty_cycle(self.calc_duty_cycle(duty_ratio))?;
-        if !self.is_enabled {
-            self.is_enabled = true;
-            self.pwm.set_enable(self.is_enabled)?;
-            println!("fan start: temperature={}C, duty_ratio={}", temperature, duty_ratio);
-        }
-        Ok(())
-    }
-
-    fn stop(&mut self, temperature: f32) -> io::Result<()> {
-        if self.is_enabled {
-            self.is_enabled = false;
-            self.pwm.set_enable(self.is_enabled)?;
-            println!("fan stop: temperature={}C", temperature);
-        }
-        Ok(())
-    }
-
-    fn terminate(&mut self) -> io::Result<()> {
-        if self.is_enabled {
-            self.is_enabled = false;
-            self.pwm.set_enable(self.is_enabled)?;
-            println!("fan terminate");
-        }
-        Ok(())
-    }
-
-    fn calc_duty_cycle(&self, duty_ratio: f32) -> u32 {
-        f32::max(duty_ratio * self.frequency as f32, 0.0) as u32
-    }
-}
-
-
-pub enum AppLoopState {
-    Launch(usize),
-    MaxSpeed(usize),
-    Normal,
-}
-
-
-fn run_normal(sensor: &SensorDevice, pwm: &mut PWMDeviceWrapper, control: &mut Control) -> io::Result<()> {
-    let temperature = sensor.get()?;
-    let output = control.update(temperature);
-    match output {
-        ControlOutput::Off => {
-            pwm.stop(temperature)?;
-        }
-        ControlOutput::Change(duty_ratio) => {
-            pwm.change_speed(duty_ratio, temperature)?;
-        }
-        ControlOutput::Keep => {
-            // do nothing
-        }
-    }
-    Ok(())
-}
-
-fn initial(sensor: &SensorDevice, pwm: &mut PWMDeviceWrapper, control: &mut Control) -> io::Result<()> {
-    let temperature = sensor.get()?;
-    let output = control.update_force(temperature, control.min_duty_cycle());
-    match output {
-        ControlOutput::Change(duty_ratio) => {
-            pwm.change_speed(duty_ratio, temperature)?;
-        }
-        _ => unreachable!()
-    }
-    Ok(())
-}
-
-fn main() {
-
-    let (sensor, mut pwm, mut control, interval, max_speed_time_cycle) = {
-
-        let args = Args::parse();
-        let sensor = SensorDevice::new(args.watch).expect("sensor device error");
-        let pwm = PWMDevice::new(args.execute, 0).expect("pwm device error");
-        let pwm = PWMDeviceWrapper::new(pwm, args.pwm_frequency);
+    pub fn new(args: Args) -> io::Result<Self> {
+        let sensor = SensorDevice::new(args.watch.as_path())?;
+        log::info!("sensor initialized: path={}", args.watch.display());
+        let pwm = PWMDevice::new(args.execute.as_path(), 0)?;
+        log::info!("pwm initialized: path={}/pwm{}", args.execute.display(), 0);
         let f = Function::new(
             args.stop_temperature, 
             args.start_temperature, 
@@ -175,42 +91,156 @@ fn main() {
             args.min_duty_cycle,
             args.max_duty_cycle,
         );
+        log::info!("control initialized: function={}", &f);
         let control = Control::new(f, args.lag_time_cycle);
-        (sensor, pwm, control, Duration::from_millis(args.interval), args.max_speed_time_cycle)
-    };
+        log::info!("control initialized: interval={}ms, lag_time_cycle={}, max_speed_time_cycle={}", args.interval, args.lag_time_cycle, args.max_speed_time_cycle);
+        Ok(
+            Self {
+                sensor,
+                pwm,
+                frequency: args.pwm_frequency,
+                on: false,
+                control,
+                interval: Duration::from_millis(args.interval),
+                max_speed_time_cycle: args.max_speed_time_cycle,
+                max_speed_remaining_cycle: 0,
+            }
+        )
+    }
+
+    pub fn initial(&mut self) -> io::Result<()> {
+        self.pwm.set_period(self.frequency)?;
+        self.pwm.set_polarity(Polarity::Normal)?;
+        log::info!("fan initialized: frequency={}Hz, polarity={}", self.frequency, Polarity::Normal);
+        let temperature = self.sensor.get()?;
+        let output = self.control.update_force(temperature, self.control.min_duty_cycle());
+        log::trace!("control status: temperature={:.2}°C, output={:?}", temperature, output);
+        match output {
+            ControlOutput::Off | ControlOutput::Keep => {
+                unreachable!()
+            }
+            ControlOutput::Change(duty_cycle) => {
+                if self.start_pwm(duty_cycle)? {
+                    log::info!("fan launched at {:.2}°C with pwm-duty-ratio={:.2}%", temperature, duty_cycle * 100.0);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn run(&mut self) -> io::Result<()> {
+        if self.max_speed_remaining_cycle > 0 {
+            self.max_speed_remaining_cycle -= 1;
+        } else {
+            let temperature = self.sensor.get()?;
+            let output = self.control.update(temperature);
+            log::trace!("control status: temperature={:.2}°C, output={:?}", temperature, output);
+            match output {
+                ControlOutput::Off => {
+                    if self.stop_pwm()? {
+                        log::info!("fan stopped at {:.2}°C", temperature);
+                    }
+                }
+                ControlOutput::Change(duty_cycle) => {
+                    if self.start_pwm(duty_cycle)? {
+                        log::info!("fan started at {:.2}°C with pwm-duty-ratio={:.2}%", temperature, duty_cycle * 100.0);
+                    } else {
+                        log::debug!("fan changed at {:.2}°C with pwm-duty-ratio={:.2}%", temperature, duty_cycle * 100.0);
+                    }
+                }
+                ControlOutput::Keep => {
+                    // do nothing
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn run_max_speed(&mut self) -> io::Result<()> {
+        let duty_cycle = self.control.max_duty_cycle();
+        self.start_pwm(duty_cycle)?;
+        self.max_speed_remaining_cycle = self.max_speed_time_cycle;
+        log::info!("fan set to maximum speed for {} cycles with pwm-duty-ratio={:.2}%", self.max_speed_time_cycle, duty_cycle * 100.0);
+        Ok(())
+    }
+
+    pub fn terminate(&mut self) -> io::Result<()> {
+        self.stop_pwm()?;
+        log::info!("fan terminated");
+        Ok(())
+    }
+
+    fn stop_pwm(&mut self) -> io::Result<bool> {
+        if self.on {
+            self.pwm.set_enable(false)?;
+            self.on = false;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn start_pwm(&mut self, duty_cycle: f32) -> io::Result<bool> {
+        self.pwm.set_duty_cycle((duty_cycle * self.frequency as f32) as u32)?;
+        if !self.on {
+            self.pwm.set_enable(true)?;
+            self.on = true;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+
+fn get_log_level() -> log::LevelFilter {
+    match std::env::var("RUST_LOG") {
+        Ok(s) => {
+            match s.to_lowercase().as_str() {
+                "error" => log::LevelFilter::Error,
+                "warn" => log::LevelFilter::Warn,
+                "info" => log::LevelFilter::Info,
+                "debug" => log::LevelFilter::Debug,
+                "trace" => log::LevelFilter::Trace,
+                _ => log::LevelFilter::Info,
+            }
+        }
+        Err(_e) => log::LevelFilter::Info,
+    }
+}
+
+fn main() {
+
+    simple_logger::init_with_env().unwrap();
+
+    let args = Args::parse();
+    let mut app = Application::new(args).unwrap();
 
     unsafe { signal::register(&[libc::SIGINT, libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2]) };
 
-    initial(&sensor, &mut pwm, &mut control).unwrap();
+    app.initial().unwrap();
 
-    let mut max_speed_last_cycle = 0;
-
-    while let Ok(signum) = unsafe { signal::wait(interval) } {
+    while let Ok(signum) = unsafe { signal::wait(app.interval) } {
         match signum {
             libc::SIGINT => {
-                println!("receive SIGINT to terminate");
-                pwm.terminate().unwrap();
+                log::debug!("receive SIGINT to terminate");
+                app.terminate().unwrap();
                 break;
             }
             libc::SIGTERM => {
-                println!("receive SIGTERM to terminate");
-                pwm.terminate().unwrap();
+                log::debug!("receive SIGTERM to terminate");
+                app.terminate().unwrap();
                 break;
             }
             libc::SIGUSR2 => {
-                println!("receive SIGUSR2 to maximum fan speed for {} cycles", max_speed_time_cycle);
-                max_speed_last_cycle = max_speed_time_cycle;
-                pwm.change_speed(control.max_duty_cycle(), sensor.get().unwrap()).unwrap();
+                log::debug!("receive SIGUSR2 to maximum fan speed");
+                app.run_max_speed().unwrap();
             }
             libc::SIGUSR1 => {
-                println!("receive SIGUSR1");
+                log::debug!("receive SIGUSR1");
             }
             0 => {
-                if max_speed_last_cycle > 0 {
-                    max_speed_last_cycle -= 1;
-                } else {
-                    run_normal(&sensor, &mut pwm, &mut control).unwrap();
-                }
+                app.run().unwrap();
             }
             _ => {
                 unreachable!("Unknown signal: {}", signum);

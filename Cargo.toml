@@ -10,3 +10,5 @@ description = "A simple fan control daemon for Rock 5b"
 lazy_static = "^1.4"
 libc = "^0.2"
 clap = { version = "^4.1", features = ["derive"] }
+log = "^0.4"
+simple_logger = "^4.1"

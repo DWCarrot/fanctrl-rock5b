@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub enum ControlOutput {
     Off,
     Change(f32),
@@ -5,12 +6,21 @@ pub enum ControlOutput {
 }
 
 
+#[derive(Debug)]
 pub struct Function {
     stop_temperature: f32, // T0
     start_temperature: f32, // T1
     high_temperature: f32, // T2
     min_duty_cycle: f32, // Pmin
     max_duty_cycle: f32, // Pmax
+}
+
+impl std::fmt::Display for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, 
+            "ReLU[T0={:.2}°C, T1={:.2}°C, T2={:.2}°C, Pmin={:.2}%, Pmax={:.2}%]", 
+            self.stop_temperature, self.start_temperature, self.high_temperature, self.min_duty_cycle * 100.0, self.max_duty_cycle * 100.0)
+    }
 }
 
 impl Function {
@@ -36,7 +46,7 @@ impl Function {
     }
 }
 
-
+#[derive(Debug)]
 pub enum State {
     Off,
     Function { last_duty_cycle: f32 },
@@ -44,6 +54,7 @@ pub enum State {
 }
 
 
+#[derive(Debug)]
 pub struct Control {
     state: State,
     last_temperature: f32,
