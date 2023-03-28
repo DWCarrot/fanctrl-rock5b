@@ -1,5 +1,6 @@
 use std::io;
 use std::path::PathBuf;
+use std::process;
 use std::time::Duration; 
 
 use clap::Parser;
@@ -211,36 +212,53 @@ fn get_log_level() -> log::LevelFilter {
 
 fn main() {
 
-    simple_logger::init_with_env().unwrap();
+    simple_logger::SimpleLogger::new().env().with_local_timestamps().init().unwrap();
 
     let args = Args::parse();
-    let mut app = Application::new(args).unwrap();
+    let mut app = match Application::new(args) {
+        Ok(app) => app,
+        Err(e) => {
+            log::error!("failed to create application: {}", e);
+            process::exit(1);
+        }
+    };
 
     unsafe { signal::register(&[libc::SIGINT, libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2]) };
 
-    app.initial().unwrap();
+    if let Err(e) = app.initial() {
+        log::error!("failed to initialize: {}", e);
+        process::exit(1);
+    }
 
     while let Ok(signum) = unsafe { signal::wait(app.interval) } {
         match signum {
             libc::SIGINT => {
                 log::debug!("receive SIGINT to terminate");
-                app.terminate().unwrap();
+                if let Err(e) = app.terminate() {
+                    log::error!("failed to terminate: {}", e);
+                }
                 break;
             }
             libc::SIGTERM => {
                 log::debug!("receive SIGTERM to terminate");
-                app.terminate().unwrap();
+                if let Err(e) = app.terminate() {
+                    log::error!("failed to terminate: {}", e);
+                }
                 break;
             }
             libc::SIGUSR2 => {
                 log::debug!("receive SIGUSR2 to maximum fan speed");
-                app.run_max_speed().unwrap();
+                if let Err(e) = app.run_max_speed() {
+                    log::error!("failed to set fan speed to maximum: {}", e);
+                }
             }
             libc::SIGUSR1 => {
                 log::debug!("receive SIGUSR1");
             }
             0 => {
-                app.run().unwrap();
+                if let Err(e) = app.run() {
+                    log::error!("failed to run loop: {}", e);
+                }
             }
             _ => {
                 unreachable!("Unknown signal: {}", signum);
