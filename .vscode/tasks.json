@@ -7,7 +7,8 @@
 			"args": [
 				"-i", "../id_rsa",
 				"${workspaceFolder}/target/aarch64-unknown-linux-gnu/debug/fanctrl",
-				"${env:ROCK5B_HOST}:${env:REMOTE_WORKSPACE}/fanctrl"
+				"${workspaceFolder}/fanctrl.conf",
+				"${env:ROCK5B_HOST}:${env:REMOTE_WORKSPACE}/"
 			],
 			"label": "rust: remote ARM debug setup",
 			"problemMatcher": [],

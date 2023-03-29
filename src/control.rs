@@ -1,3 +1,25 @@
+use std::fmt;
+
+#[derive(Debug)]
+pub struct ParameterError<T> {
+    field: &'static str,
+    reason: &'static str,
+    value: T,
+}
+
+impl<T: fmt::Debug> fmt::Display for ParameterError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid value `{:?}` for {}: {}", self.value, self.field, self.reason)
+    }
+}
+
+impl<T: fmt::Debug> std::error::Error for ParameterError<T> {
+    
+}
+
+
+
+
 #[derive(Debug)]
 pub enum ControlOutput {
     Off,
@@ -25,14 +47,31 @@ impl std::fmt::Display for Function {
 
 impl Function {
 
-    pub fn new(stop_temperature: f32, start_temperature: f32, high_temperature: f32, min_duty_cycle: f32, max_duty_cycle: f32) -> Self {
-        Self {
-            stop_temperature,
-            start_temperature,
-            high_temperature,
-            min_duty_cycle,
-            max_duty_cycle,
+    pub fn new(stop_temperature: f32, start_temperature: f32, high_temperature: f32, min_duty_cycle: f32, max_duty_cycle: f32) -> Result<Self, ParameterError<f32>> {
+        if stop_temperature >= start_temperature {
+            return Err(ParameterError { field: "start_temperature", reason: "lower than stop_temperature", value: start_temperature });
         }
+        if start_temperature >= high_temperature {
+            return Err(ParameterError { field: "high_temperature", reason: "lower than start_temperature", value: high_temperature });
+        }
+        if min_duty_cycle <= 0.0 || min_duty_cycle >= 1.0 {
+            return Err(ParameterError { field: "min_duty_cycle", reason: "not in (0, 1)", value: min_duty_cycle });
+        }
+        if max_duty_cycle <= 0.0 || max_duty_cycle >= 1.0 {
+            return Err(ParameterError { field: "max_duty_cycle", reason: "not in (0, 1)", value: max_duty_cycle });
+        }
+        if min_duty_cycle >= max_duty_cycle {
+            return Err(ParameterError { field: "max_duty_cycle", reason: "lower than min_duty_cycle", value: max_duty_cycle });
+        }
+        Ok(
+            Self {
+                stop_temperature,
+                start_temperature,
+                high_temperature,
+                min_duty_cycle,
+                max_duty_cycle,
+            }
+        )
     }
 
     pub fn map(&self, t: f32) -> f32 {

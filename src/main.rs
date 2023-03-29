@@ -1,9 +1,11 @@
+use std::env;
 use std::io;
 use std::path::PathBuf;
 use std::process;
+use std::str::FromStr;
 use std::time::Duration; 
 
-use clap::Parser;
+use ini::Ini;
 use control::Control;
 use control::ControlOutput;
 use control::Function;
@@ -17,55 +19,42 @@ mod pwm;
 mod control;
 
 
-#[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[derive(Debug)]
 struct Args {
 
     /// Path to the sensor device; like "/sys/class/thermal/thermal_zone0"
-    #[clap(short = 'i', long)]
     watch: PathBuf,
 
     /// Path to the pwm device; like "/sys/devices/platform/fd8b0010.pwm/pwm/pwmchip1"
-    #[clap(short = 'o', long)]
     execute: PathBuf,
 
     /// Interval between temperature checks, in milliseconds
-    #[clap(short = 'd', long, default_value = "5000")]
     interval: u64,
 
     /// Time before the pwm change when temperature drop, in times of interval
-    #[clap(short = 'G', long, default_value = "32")]
     max_speed_time_cycle: usize,
 
     /// Time before the pwm change when temperature drop, in times of interval
-    #[clap(short = 'w', long, default_value = "8")]
     lag_time_cycle: usize,
 
     /// Temperature to stop the pwm, in degrees Celsius
-    #[clap(short = '0', long, default_value = "35.0")]
     stop_temperature: f32,
 
     /// Temperature to start the pwm, in degrees Celsius
-    #[clap(short = '1', long, default_value = "40.0")]
     start_temperature: f32,
 
     /// Temperature when pwm should reach maximum, in degrees Celsius
-    #[clap(short = '2', long, default_value = "70.0")]
     high_temperature: f32,
 
     /// Minimum duty cycle, in (0, 1)
-    #[clap(short = 'L', long, default_value = "0.5")]
     min_duty_cycle: f32,
 
     /// Maximum duty cycle, in (0, 1)
-    #[clap(short = 'U', long, default_value = "0.9")]
     max_duty_cycle: f32,
 
     /// PWM frequency, in Hz
-    #[clap(short = 'f', long, default_value = "10000")]
     pwm_frequency: u32,
 }
-
 
 struct Application {
     sensor: SensorDevice,
@@ -80,30 +69,51 @@ struct Application {
 
 impl Application {
 
-    pub fn new(args: Args) -> io::Result<Self> {
-        let sensor = SensorDevice::new(args.watch.as_path())?;
-        log::info!("sensor initialized: path={}", args.watch.display());
-        let pwm = PWMDevice::new(args.execute.as_path(), 0)?;
-        log::info!("pwm initialized: path={}/pwm{}", args.execute.display(), 0);
+    fn parse<'a>(ini: &'a Ini, field: &'static str) -> io::Result<&'a str> {
+        ini.get_from::<String>(None, field).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, field))
+    }
+
+    fn parse_value<T>(ini: &Ini, field: &'static str) -> io::Result<T> 
+    where 
+        T: FromStr, 
+        <T as FromStr>::Err: std::error::Error
+    {
+        let s = Application::parse(ini, field)?;
+        s.parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {}={}", e, field, s)))
+    }
+
+    pub fn new(ini: Ini) -> io::Result<Self> {
+        let watch = Application::parse(&ini, "watch")?;
+        let sensor = SensorDevice::new(watch)?;
+        log::info!("sensor initialized: path={}", watch);
+        let execute = Application::parse(&ini, "execute")?;
+        let instance = 0;
+        let pwm_frequency = Application::parse_value(&ini, "pwm_frequency")?;
+        let pwm = PWMDevice::new(execute, instance)?;
+        log::info!("pwm initialized: path={}/pwm{}, pwm_frequency={}", execute, instance, pwm_frequency);
         let f = Function::new(
-            args.stop_temperature, 
-            args.start_temperature, 
-            args.high_temperature, 
-            args.min_duty_cycle,
-            args.max_duty_cycle,
-        );
+            Application::parse_value(&ini, "stop_temperature")?,
+            Application::parse_value(&ini, "start_temperature")?,
+            Application::parse_value(&ini, "high_temperature")?,
+            Application::parse_value(&ini, "min_duty_cycle")?,
+            Application::parse_value(&ini, "max_duty_cycle")?,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         log::info!("control initialized: function={}", &f);
-        let control = Control::new(f, args.lag_time_cycle);
-        log::info!("control initialized: interval={}ms, lag_time_cycle={}, max_speed_time_cycle={}", args.interval, args.lag_time_cycle, args.max_speed_time_cycle);
+        let lag_time_cycle = Application::parse_value(&ini, "lag_time_cycle")?;
+        let control = Control::new(f, lag_time_cycle);
+        let interval = Application::parse_value(&ini, "interval")?;
+        let max_speed_time_cycle = Application::parse_value(&ini, "max_speed_time_cycle")?;
+        log::info!("control initialized: interval={}ms, lag_time_cycle={}, max_speed_time_cycle={}",interval, lag_time_cycle, max_speed_time_cycle);
         Ok(
             Self {
                 sensor,
                 pwm,
-                frequency: args.pwm_frequency,
+                frequency: pwm_frequency,
                 on: false,
                 control,
-                interval: Duration::from_millis(args.interval),
-                max_speed_time_cycle: args.max_speed_time_cycle,
+                interval: Duration::from_millis(interval),
+                max_speed_time_cycle: max_speed_time_cycle,
                 max_speed_remaining_cycle: 0,
             }
         )
@@ -214,11 +224,35 @@ fn main() {
 
     simple_logger::SimpleLogger::new().env().with_local_timestamps().init().unwrap();
 
-    let args = Args::parse();
+    let (mut args, path) = {
+        let cfg_path = env::args().nth(1).unwrap_or_else(|| String::from("fanctrl.conf"));
+        match cfg_path.as_str() {
+            "-v" | "--version" => {
+                println!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
+                process::exit(0);
+            }
+            "-h" | "--help" => {
+                println!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
+                println!("{}", env!("CARGO_PKG_DESCRIPTION"));
+                println!();
+                println!("Usage:  {} [CONFIGURATION_FILE]", env!("CARGO_BIN_NAME"));
+                process::exit(0);
+            }
+            _ => {
+                match Ini::load_from_file(cfg_path.as_str()) {
+                    Ok(cfg) => (cfg, cfg_path),
+                    Err(e) => {
+                        log::error!("failed to load configuration: {:?}", e);
+                        process::exit(1);
+                    }
+                }
+            }
+        }
+    };
     let mut app = match Application::new(args) {
         Ok(app) => app,
         Err(e) => {
-            log::error!("failed to create application: {}", e);
+            log::error!("failed to create application: {:?}", e);
             process::exit(1);
         }
     };
@@ -226,7 +260,7 @@ fn main() {
     unsafe { signal::register(&[libc::SIGINT, libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2]) };
 
     if let Err(e) = app.initial() {
-        log::error!("failed to initialize: {}", e);
+        log::error!("failed to initialize: {:?}", e);
         process::exit(1);
     }
 
@@ -235,21 +269,21 @@ fn main() {
             libc::SIGINT => {
                 log::debug!("receive SIGINT to terminate");
                 if let Err(e) = app.terminate() {
-                    log::error!("failed to terminate: {}", e);
+                    log::error!("failed to terminate: {:?}", e);
                 }
                 break;
             }
             libc::SIGTERM => {
                 log::debug!("receive SIGTERM to terminate");
                 if let Err(e) = app.terminate() {
-                    log::error!("failed to terminate: {}", e);
+                    log::error!("failed to terminate: {:?}", e);
                 }
                 break;
             }
             libc::SIGUSR2 => {
                 log::debug!("receive SIGUSR2 to maximum fan speed");
                 if let Err(e) = app.run_max_speed() {
-                    log::error!("failed to set fan speed to maximum: {}", e);
+                    log::error!("failed to set fan speed to maximum: {:?}", e);
                 }
             }
             libc::SIGUSR1 => {
@@ -257,7 +291,7 @@ fn main() {
             }
             0 => {
                 if let Err(e) = app.run() {
-                    log::error!("failed to run loop: {}", e);
+                    log::error!("failed to run loop: {:?}", e);
                 }
             }
             _ => {
