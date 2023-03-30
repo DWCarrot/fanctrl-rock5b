@@ -1,0 +1,14 @@
+[Unit]
+Description=Simple Fan Controller
+
+[Service]
+User=root
+Environment="RUST_LOG=DEBUG"
+ExecStart=/usr/local/bin/fanctrl /usr/local/etc/fanctrl.conf
+ExecStop=/bin/kill -s TERM $MAINPID
+Restart=on-success
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -2,13 +2,13 @@ use std::env;
 use std::io;
 use std::path::PathBuf;
 use std::process;
-use std::str::FromStr;
 use std::time::Duration; 
 
-use ini::Ini;
 use control::Control;
 use control::ControlOutput;
 use control::Function;
+use ini::FieldParseError;
+use ini::Ini;
 use pwm::PWMDevice;
 use pwm::Polarity;
 use sensor::SensorDevice;
@@ -17,6 +17,7 @@ mod signal;
 mod sensor;
 mod pwm;
 mod control;
+mod ini;
 
 
 #[derive(Debug)]
@@ -56,6 +57,58 @@ struct Args {
     pwm_frequency: u32,
 }
 
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            watch: PathBuf::new(),
+            execute: PathBuf::new(),
+            interval: 5000,
+            max_speed_time_cycle: 32,
+            lag_time_cycle: 8,
+            stop_temperature: 30.0,
+            start_temperature: 40.0,
+            high_temperature: 70.0,
+            min_duty_cycle: 0.5,
+            max_duty_cycle: 0.9,
+            pwm_frequency: 10000,
+        }
+    }
+}
+
+impl Ini for Args {
+    type Err = FieldParseError;
+
+    fn callback(
+        &mut self, 
+        filename: &std::path::Path, 
+        line: &str, 
+        line_number: usize, 
+        section: &str, 
+        key: &str, 
+        value: Option<&str>
+    ) -> Result<(), Self::Err> {
+        if section.is_empty() {
+            match key {
+                "watch" => self.watch = PathBuf::from(FieldParseError::parse(value, "watch")?),
+                "execute" => self.execute = PathBuf::from(FieldParseError::parse(value, "execute")?),
+                "interval" => self.interval = FieldParseError::parse_value(value, "interval")?,
+                "max_speed_time_cycle" => self.max_speed_time_cycle = FieldParseError::parse_value(value, "max_speed_time_cycle")?,
+                "lag_time_cycle" => self.lag_time_cycle = FieldParseError::parse_value(value, "lag_time_cycle")?,
+                "stop_temperature" => self.stop_temperature = FieldParseError::parse_value(value, "stop_temperature")?,
+                "start_temperature" => self.start_temperature = FieldParseError::parse_value(value, "start_temperature")?,
+                "high_temperature" => self.high_temperature = FieldParseError::parse_value(value, "high_temperature")?,
+                "min_duty_cycle" => self.min_duty_cycle = FieldParseError::parse_value(value, "min_duty_cycle")?,
+                "max_duty_cycle" => self.max_duty_cycle = FieldParseError::parse_value(value, "max_duty_cycle")?,
+                "pwm_frequency" => self.pwm_frequency = FieldParseError::parse_value(value, "pwm_frequency")?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+
 struct Application {
     sensor: SensorDevice,
     pwm: PWMDevice,
@@ -69,51 +122,38 @@ struct Application {
 
 impl Application {
 
-    fn parse<'a>(ini: &'a Ini, field: &'static str) -> io::Result<&'a str> {
-        ini.get_from::<String>(None, field).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, field))
+    pub fn new_from_config(config: &str) -> io::Result<Self> {
+        let mut args = Args::default();
+        args.parse_from_file(config)?;
+        Self::new(args)
     }
 
-    fn parse_value<T>(ini: &Ini, field: &'static str) -> io::Result<T> 
-    where 
-        T: FromStr, 
-        <T as FromStr>::Err: std::error::Error
-    {
-        let s = Application::parse(ini, field)?;
-        s.parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {}={}", e, field, s)))
-    }
-
-    pub fn new(ini: Ini) -> io::Result<Self> {
-        let watch = Application::parse(&ini, "watch")?;
-        let sensor = SensorDevice::new(watch)?;
-        log::info!("sensor initialized: path={}", watch);
-        let execute = Application::parse(&ini, "execute")?;
+    pub fn new(args: Args) -> io::Result<Self> {
+        let sensor = SensorDevice::new(args.watch.as_path())?;
+        log::info!("sensor initialized: path={}", args.watch.as_path().display());
         let instance = 0;
-        let pwm_frequency = Application::parse_value(&ini, "pwm_frequency")?;
-        let pwm = PWMDevice::new(execute, instance)?;
-        log::info!("pwm initialized: path={}/pwm{}, pwm_frequency={}", execute, instance, pwm_frequency);
+        let pwm = PWMDevice::new(args.execute.as_path(), instance)?;
+        log::info!("pwm initialized: path={}/pwm{}, pwm_frequency={}", args.execute.as_path().display(), instance, args.pwm_frequency);
         let f = Function::new(
-            Application::parse_value(&ini, "stop_temperature")?,
-            Application::parse_value(&ini, "start_temperature")?,
-            Application::parse_value(&ini, "high_temperature")?,
-            Application::parse_value(&ini, "min_duty_cycle")?,
-            Application::parse_value(&ini, "max_duty_cycle")?,
+            args.stop_temperature,
+            args.start_temperature,
+            args.high_temperature,
+            args.min_duty_cycle,
+            args.max_duty_cycle,
         )
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         log::info!("control initialized: function={}", &f);
-        let lag_time_cycle = Application::parse_value(&ini, "lag_time_cycle")?;
-        let control = Control::new(f, lag_time_cycle);
-        let interval = Application::parse_value(&ini, "interval")?;
-        let max_speed_time_cycle = Application::parse_value(&ini, "max_speed_time_cycle")?;
-        log::info!("control initialized: interval={}ms, lag_time_cycle={}, max_speed_time_cycle={}",interval, lag_time_cycle, max_speed_time_cycle);
+        let control = Control::new(f, args.lag_time_cycle);
+        log::info!("control initialized: interval={}ms, lag_time_cycle={}, max_speed_time_cycle={}",args.interval, args.lag_time_cycle, args.max_speed_time_cycle);
         Ok(
             Self {
                 sensor,
                 pwm,
-                frequency: pwm_frequency,
+                frequency: args.pwm_frequency,
                 on: false,
                 control,
-                interval: Duration::from_millis(interval),
-                max_speed_time_cycle: max_speed_time_cycle,
+                interval: Duration::from_millis(args.interval),
+                max_speed_time_cycle: args.max_speed_time_cycle,
                 max_speed_remaining_cycle: 0,
             }
         )
@@ -222,9 +262,13 @@ fn get_log_level() -> log::LevelFilter {
 
 fn main() {
 
+    #[cfg(feature = "betterlog")]
     simple_logger::SimpleLogger::new().env().with_local_timestamps().init().unwrap();
 
-    let (mut args, path) = {
+    #[cfg(not(feature = "betterlog"))]
+    simple_logger::SimpleLogger::new().env().init().unwrap();
+
+    let (mut app, path) = {
         let cfg_path = env::args().nth(1).unwrap_or_else(|| String::from("fanctrl.conf"));
         match cfg_path.as_str() {
             "-v" | "--version" => {
@@ -239,21 +283,14 @@ fn main() {
                 process::exit(0);
             }
             _ => {
-                match Ini::load_from_file(cfg_path.as_str()) {
-                    Ok(cfg) => (cfg, cfg_path),
+                match Application::new_from_config(cfg_path.as_str()) {
+                    Ok(app) => (app, cfg_path),
                     Err(e) => {
-                        log::error!("failed to load configuration: {:?}", e);
+                        log::error!("failed to create application: {:?}", e);
                         process::exit(1);
                     }
                 }
             }
-        }
-    };
-    let mut app = match Application::new(args) {
-        Ok(app) => app,
-        Err(e) => {
-            log::error!("failed to create application: {:?}", e);
-            process::exit(1);
         }
     };
 

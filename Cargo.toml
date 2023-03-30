@@ -1,14 +1,17 @@
 [package]
 name = "fanctrl"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "A simple fan control daemon for Rock 5b"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rust-ini = "^0.18"
 lazy_static = "^1.4"
 libc = "^0.2"
 log = "^0.4"
-simple_logger = "^4.1"
+simple_logger = { version = "^4.1", default-features = false }
+
+[features]
+default = ["betterlog"]
+betterlog = ["simple_logger/timestamps", "simple_logger/colors"]
