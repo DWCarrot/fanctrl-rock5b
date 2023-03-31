@@ -154,9 +154,14 @@ impl Control {
                         }
                     }
                 } else {
-                    let duty_cycle = self.temperature_rule.map(temperature);
-                    self.state = State::Function { last_duty_cycle: duty_cycle };
-                    ControlOutput::Change(duty_cycle)
+                    if temperature < *keep_temperature {
+                        *remain_time_cycle = self.lag_time_cycle.min(*remain_time_cycle + 1);
+                        ControlOutput::Keep
+                    } else {
+                        let duty_cycle = self.temperature_rule.map(temperature);
+                        self.state = State::Function { last_duty_cycle: duty_cycle };
+                        ControlOutput::Change(duty_cycle)
+                    }
                 }
             },
         };

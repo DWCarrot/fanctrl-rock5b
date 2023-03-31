@@ -8,7 +8,10 @@ stateDiagram
     Function --> Function : T[i] > T[i-1]
     state "Keep\nP[i]=Pk;Tk" as Keep
     Function --> Keep : T[i] <= T[i-1]\n\n$Tk=T[i]\n$Pk=f($Tk)
-    Keep --> Function : T[i] > T[i-1]
+    state if_keep <<choice>>
+    Keep --> if_keep : T[i] > T[i-1]
+    if_keep --> Function : T[i] > $Tk
+    if_keep --> Keep : T[i] <= $Tk\nreset lag-time
     Keep --> Keep : T[i] <= T[i-1] & in lag-time
     state continually_drop <<choice>>
     Keep --> continually_drop : T[i] <= T[i-1] & out lag-time

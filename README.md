@@ -111,3 +111,8 @@ Options:
 ## Design
 
 design.md
+
+## TODO
+
+- [ ] apply PID control policy
+- [ ] simple test system
