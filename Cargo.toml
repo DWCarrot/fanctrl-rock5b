@@ -16,11 +16,6 @@ simple_logger = { version = "^4.1", default-features = false }
 default = ["betterlog"]
 betterlog = ["simple_logger/timestamps", "simple_logger/colors"]
 
-#[profile.release]
-#strip = true
-#lto = true
-#codegen-units = 1
-
 [profile.release]
 opt-level = 3
 lto = true
